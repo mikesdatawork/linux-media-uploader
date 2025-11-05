@@ -1,0 +1,401 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - YouTube Uploader{% endblock %}
+
+{% block content %}
+<div class="header">
+    <h1>YouTube Uploader Dashboard</h1>
+    <p>Schedule and manage your YouTube Shorts uploads</p>
+</div>
+
+<div class="card">
+    <h2>Quick Upload</h2>
+    
+    <button type="button" class="btn btn-secondary" onclick="testConnection()" style="margin-bottom: 10px;">
+        Test Server Connection
+    </button>
+    
+    <div class="form-group">
+        <label for="upload-folder">Video Folder Path:</label>
+        <input type="text" id="upload-folder" placeholder="/home/user/Downloads/test-videos" 
+               value="/home/user/Downloads/test-videos" style="width: 100%; padding: 10px; margin-bottom: 10px;">
+    </div>
+    
+    <button type="button" class="btn btn-primary" onclick="scanFolder()" style="margin-bottom: 15px;">
+        Scan Folder for Videos
+    </button>
+    
+    <!-- Upload buttons - initially disabled and gray -->
+    <div style="margin-bottom: 20px;" id="upload-controls">
+        <button type="button" class="btn btn-disabled" onclick="startUpload()" id="upload-btn" disabled>
+            Scan folder to see upload options
+        </button>
+        <button type="button" class="btn btn-disabled" onclick="startUpload(true)" id="upload-all-btn" disabled style="margin-left: 10px;">
+            Scan folder first
+        </button>
+    </div>
+    
+    <div id="scan-results" style="display: none;">
+        <h3>Videos Found:</h3>
+        <div id="videos-container"></div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Status</h2>
+    <div id="status-area">
+        <p>Enter a folder path and scan for videos to get started.</p>
+    </div>
+</div>
+
+<!-- Processing Modal -->
+<div id="processing-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #2d2d2d; padding: 30px; border-radius: 8px; min-width: 400px; border: 1px solid #404040;">
+        <h3 style="color: #ff4444; margin-bottom: 20px;">🎬 Processing Video</h3>
+        <div id="processing-filename" style="font-weight: bold; margin-bottom: 10px;"></div>
+        <div id="processing-status">Analyzing video...</div>
+        <div style="width: 100%; height: 20px; background: #404040; border-radius: 10px; margin: 20px 0;">
+            <div id="processing-progress" style="width: 0%; height: 100%; background: #ff4444; border-radius: 10px; transition: width 0.3s;"></div>
+        </div>
+        <button type="button" class="btn btn-secondary" onclick="closeProcessingModal()" id="processing-close-btn" disabled>Close</button>
+    </div>
+</div>
+
+<style>
+/* Add disabled button style */
+.btn-disabled {
+    background: #555 !important;
+    color: #888 !important;
+    cursor: not-allowed !important;
+    border: 1px solid #666 !important;
+}
+
+.btn-disabled:hover {
+    background: #555 !important;
+    color: #888 !important;
+}
+</style>
+
+<script>
+    let scannedVideos = [];
+    let newVideos = [];
+    let allVideos = [];
+    
+    function testConnection() {
+        updateStatus('Testing server connection...');
+        
+        fetch('/api/test_upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ test: 'data' })
+        })
+        .then(response => response.json())
+        .then(data => {
+            updateStatus(`Server test: ${data.message}`);
+        })
+        .catch(error => {
+            updateStatus(`Server test failed: ${error.message}`);
+        });
+    }
+    
+    function scanFolder() {
+        const folderPath = document.getElementById('upload-folder').value.trim();
+        
+        if (!folderPath) {
+            alert('Please enter a folder path');
+            return;
+        }
+        
+        updateStatus('Scanning folder...');
+        
+        // Reset buttons to disabled state during scan
+        resetUploadButtons();
+        
+        fetch('/api/scan_folder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folder_path: folderPath })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                scannedVideos = data.videos;
+                newVideos = data.videos.filter(v => v.valid && v.status_type !== 'duplicate');
+                allVideos = data.videos.filter(v => v.status_type !== 'invalid');
+                displayVideos(data.videos);
+                updateUploadButtons(); // Enable buttons after successful scan
+                
+                const wrongAR = data.videos.filter(v => v.status_type === 'wrong_ar').length;
+                const duplicates = data.videos.filter(v => v.status_type === 'duplicate').length;
+                updateStatus(`Found ${data.videos.length} videos (${newVideos.length} ready, ${wrongAR} need fixing, ${duplicates} duplicates)`);
+            } else {
+                updateStatus(`Error: ${data.error}`);
+                document.getElementById('scan-results').style.display = 'none';
+                resetUploadButtons(); // Keep disabled on error
+            }
+        })
+        .catch(error => {
+            updateStatus(`Error: ${error.message}`);
+            resetUploadButtons(); // Keep disabled on error
+        });
+    }
+    
+    function resetUploadButtons() {
+        const uploadBtn = document.getElementById('upload-btn');
+        const uploadAllBtn = document.getElementById('upload-all-btn');
+        
+        uploadBtn.disabled = true;
+        uploadBtn.className = 'btn btn-disabled';
+        uploadBtn.textContent = 'Scan folder to see upload options';
+        
+        uploadAllBtn.disabled = true;
+        uploadAllBtn.className = 'btn btn-disabled';
+        uploadAllBtn.textContent = 'Scan folder first';
+    }
+    
+    function displayVideos(videos) {
+        const container = document.getElementById('videos-container');
+        const resultsDiv = document.getElementById('scan-results');
+        
+        if (videos.length === 0) {
+            container.innerHTML = '<p>No video files found</p>';
+            resultsDiv.style.display = 'block';
+            return;
+        }
+        
+        let html = '<div style="display: flex; flex-direction: column; gap: 10px;">';
+        
+        videos.forEach(video => {
+            let icon, bgColor, textColor, actionButtons = '';
+            
+            switch (video.status_type) {
+                case 'duplicate':
+                    icon = '🔄';
+                    bgColor = '#4a4a4a';
+                    textColor = '#ccc';
+                    actionButtons = video.youtube_url ? 
+                        `<a href="${video.youtube_url}" target="_blank" style="color: #ff4444; text-decoration: none; margin-left: 10px;">🎬 View on YouTube</a>` +
+                        `<button onclick="uploadSingle('${video.filename}')" style="margin-left: 10px; padding: 6px 12px; background: #666; color: white; border: none; border-radius: 3px; cursor: pointer;">Upload Anyway</button>` :
+                        `<button onclick="uploadSingle('${video.filename}')" style="margin-left: 10px; padding: 6px 12px; background: #666; color: white; border: none; border-radius: 3px; cursor: pointer;">Upload Anyway</button>`;
+                    break;
+                case 'wrong_ar':
+                    icon = '📐';
+                    bgColor = '#4a4a4a';
+                    textColor = '#ffcc02';
+                    actionButtons = `<button onclick="autoFixVideo('${video.filename}')" style="margin-left: 10px; padding: 6px 12px; background: #ff9800; color: white; border: none; border-radius: 3px; cursor: pointer;">🤖 Auto-Fix</button>`;
+                    break;
+                case 'retry':
+                    icon = '🔄';
+                    bgColor = '#665500';
+                    textColor = '#ffcc02';
+                    break;
+                case 'new':
+                    icon = '🆕';
+                    bgColor = '#1b5e20';
+                    textColor = '#c8e6c9';
+                    break;
+                case 'invalid':
+                    icon = '❌';
+                    bgColor = '#b71c1c';
+                    textColor = '#ffcdd2';
+                    break;
+                default:
+                    icon = '📹';
+                    bgColor = '#404040';
+                    textColor = '#e0e0e0';
+            }
+            
+            html += `
+                <div style="display: flex; align-items: center; padding: 12px; background: ${bgColor}; border-radius: 6px; border-left: 4px solid ${textColor};">
+                    <span style="font-size: 20px; margin-right: 12px;">${icon}</span>
+                    <div style="flex: 1;">
+                        <div style="font-weight: bold; color: ${textColor}; margin-bottom: 4px;">${video.filename}</div>
+                        <div style="font-size: 14px; color: ${textColor}; opacity: 0.9;">${video.message}</div>
+                    </div>
+                    ${actionButtons}
+                </div>
+            `;
+        });
+        
+        html += '</div>';
+        container.innerHTML = html;
+        resultsDiv.style.display = 'block';
+    }
+    
+    function autoFixVideo(filename) {
+        const video = scannedVideos.find(v => v.filename === filename);
+        if (!video) return;
+        
+        if (!confirm(`Auto-fix "${filename}" to 9:16 aspect ratio?\n\nThis will:\n• Detect subjects using AI\n• Crop intelligently to 9:16\n• Save as "${filename.replace(/(\.[^.]+)$/, '_crop916$1')}"`)) {
+            return;
+        }
+        
+        showProcessingModal(filename);
+        updateProcessingStatus('Analyzing video and detecting subjects...', 10);
+        
+        fetch('/api/process_video', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_path: video.path })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                updateProcessingStatus('✅ Video processed successfully!', 100);
+                document.getElementById('processing-close-btn').disabled = false;
+                
+                setTimeout(() => {
+                    closeProcessingModal();
+                    alert(`✅ Success!\n\nProcessed video saved as:\n"${data.output_filename}"\n\nRescan the folder to see the new video.`);
+                }, 2000);
+            } else {
+                updateProcessingStatus(`❌ Processing failed: ${data.error}`, 0);
+                document.getElementById('processing-close-btn').disabled = false;
+            }
+        })
+        .catch(error => {
+            updateProcessingStatus(`❌ Error: ${error.message}`, 0);
+            document.getElementById('processing-close-btn').disabled = false;
+        });
+    }
+    
+    function showProcessingModal(filename) {
+        document.getElementById('processing-filename').textContent = filename;
+        document.getElementById('processing-modal').style.display = 'block';
+        document.getElementById('processing-close-btn').disabled = true;
+        updateProcessingStatus('Starting processing...', 0);
+    }
+    
+    function closeProcessingModal() {
+        document.getElementById('processing-modal').style.display = 'none';
+    }
+    
+    function updateProcessingStatus(message, progress) {
+        document.getElementById('processing-status').textContent = message;
+        document.getElementById('processing-progress').style.width = progress + '%';
+    }
+    
+    function updateUploadButtons() {
+        const uploadBtn = document.getElementById('upload-btn');
+        const uploadAllBtn = document.getElementById('upload-all-btn');
+        
+        const newCount = newVideos.length;
+        const allCount = allVideos.length;
+        
+        // Enable and style buttons based on available videos
+        if (newCount > 0) {
+            uploadBtn.disabled = false;
+            uploadBtn.className = 'btn btn-success';
+            uploadBtn.textContent = `Upload ${newCount} New Videos to YouTube`;
+        } else {
+            uploadBtn.disabled = true;
+            uploadBtn.className = 'btn btn-disabled';
+            uploadBtn.textContent = 'No new videos to upload';
+        }
+        
+        if (allCount > 0) {
+            uploadAllBtn.disabled = false;
+            uploadAllBtn.className = 'btn btn-warning';
+            uploadAllBtn.textContent = `Upload All ${allCount} Videos (Including Duplicates)`;
+        } else {
+            uploadAllBtn.disabled = true;
+            uploadAllBtn.className = 'btn btn-disabled';
+            uploadAllBtn.textContent = 'No videos available';
+        }
+    }
+    
+    function startUpload(includeAll = false) {
+        const videosToUpload = includeAll ? allVideos : newVideos;
+        
+        if (videosToUpload.length === 0) {
+            alert('No videos to upload');
+            return;
+        }
+        
+        const action = includeAll ? 'upload all videos (including duplicates)' : 'upload new videos';
+        if (!confirm(`Are you sure you want to ${action}? This will upload ${videosToUpload.length} video(s) to YouTube.`)) {
+            return;
+        }
+        
+        updateStatus('Starting upload...');
+        
+        const uploadData = videosToUpload.map(video => ({
+            filename: video.filename,
+            path: video.path,
+            title: video.filename.replace(/\.[^/.]+$/, ''),
+            description: `Uploaded via YouTube Uploader\nOriginal: ${video.filename}`,
+            tags: 'shorts,upload,automated'
+        }));
+        
+        fetch('/api/schedule_upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                videos: uploadData,
+                schedule_time: 'now'
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                updateStatus(`Success! ${data.queued} videos queued for upload`);
+                alert(`Upload started! ${data.queued} videos are being uploaded to YouTube.`);
+                window.location.href = '/upload';
+            } else {
+                updateStatus(`Upload failed: ${data.error}`);
+                alert(`Upload failed: ${data.error}`);
+            }
+        })
+        .catch(error => {
+            updateStatus(`Upload error: ${error.message}`);
+            alert(`Upload error: ${error.message}`);
+        });
+    }
+    
+    function uploadSingle(filename) {
+        const video = scannedVideos.find(v => v.filename === filename);
+        if (!video) return;
+        
+        if (!confirm(`Upload "${filename}" to YouTube?`)) return;
+        
+        const uploadData = [{
+            filename: video.filename,
+            path: video.path,
+            title: video.filename.replace(/\.[^/.]+$/, ''),
+            description: `Uploaded via YouTube Uploader\nOriginal: ${video.filename}`,
+            tags: 'shorts,upload,automated'
+        }];
+        
+        fetch('/api/schedule_upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                videos: uploadData,
+                schedule_time: 'now'
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert(`Upload started for "${filename}"!`);
+                window.location.href = '/upload';
+            } else {
+                alert(`Upload failed: ${data.error}`);
+            }
+        })
+        .catch(error => {
+            alert(`Upload error: ${error.message}`);
+        });
+    }
+    
+    function updateStatus(message) {
+        document.getElementById('status-area').innerHTML = `<p>${message}</p>`;
+    }
+    
+    // Initialize page with disabled buttons
+    document.addEventListener('DOMContentLoaded', function() {
+        testConnection();
+        resetUploadButtons(); // Ensure buttons start disabled
+    });
+</script>
+{% endblock %}

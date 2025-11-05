@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Progress - YouTube Uploader{% endblock %}
+
+{% block content %}
+<div class="header">
+    <h1>Upload Progress</h1>
+    <p>Monitor your YouTube upload status</p>
+</div>
+
+<div class="card">
+    <h2>Current Uploads</h2>
+    <div id="upload-progress-container">
+        <p>No uploads in progress</p>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Upload Controls</h2>
+    <div style="display: flex; gap: 10px;">
+        <button type="button" class="btn btn-secondary" onclick="pauseUploads()">
+            <i class="fas fa-pause"></i> Pause
+        </button>
+        <button type="button" class="btn btn-success" onclick="resumeUploads()">
+            <i class="fas fa-play"></i> Resume
+        </button>
+        <button type="button" class="btn btn-danger" onclick="cancelUploads()">
+            <i class="fas fa-stop"></i> Cancel All
+        </button>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+<script>
+    const socket = io();
+    
+    socket.on('connect', function() {
+        console.log('Connected to upload server');
+    });
+    
+    socket.on('upload_status_update', function(data) {
+        console.log('Upload status update:', data);
+        updateUploadDisplay(data);
+    });
+    
+    socket.on('upload_progress', function(data) {
+        console.log('Upload progress:', data);
+        updateProgressDisplay(data);
+    });
+    
+    function updateUploadDisplay(uploadStatus) {
+        const container = document.getElementById('upload-progress-container');
+        
+        if (Object.keys(uploadStatus).length === 0) {
+            container.innerHTML = '<p>No uploads in progress</p>';
+            return;
+        }
+        
+        let html = '<div style="display: flex; flex-direction: column; gap: 15px;">';
+        
+        Object.entries(uploadStatus).forEach(([id, upload]) => {
+            const progress = upload.progress || 0;
+            const statusColor = upload.status === 'completed' ? '#4CAF50' : 
+                              upload.status === 'failed' ? '#f44336' : 
+                              upload.status === 'uploading' ? '#ff9800' : '#666';
+            
+            html += `
+                <div style="background: #404040; padding: 15px; border-radius: 8px; border-left: 4px solid ${statusColor};">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <strong>${upload.filename}</strong>
+                        <span style="background: ${statusColor}; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px;">
+                            ${upload.status.toUpperCase()}
+                        </span>
+                    </div>
+                    <div style="margin-bottom: 10px;">
+                        <div style="width: 100%; height: 20px; background: #555; border-radius: 10px; overflow: hidden;">
+                            <div style="width: ${progress}%; height: 100%; background: #ff4444; transition: width 0.3s;"></div>
+                        </div>
+                        <div style="text-align: center; margin-top: 5px; font-size: 14px;">${progress}%</div>
+                    </div>
+                    ${upload.youtube_url ? `
+                        <div style="margin-top: 10px;">
+                            <a href="${upload.youtube_url}" target="_blank" style="color: #ff4444; text-decoration: none;">
+                                🎬 View on YouTube
+                            </a>
+                        </div>
+                    ` : ''}
+                    ${upload.error ? `
+                        <div style="color: #ff6b6b; font-size: 12px; margin-top: 10px;">
+                            ❌ ${upload.error}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        });
+        
+        html += '</div>';
+        container.innerHTML = html;
+    }
+    
+    function updateProgressDisplay(data) {
+        // Real-time progress updates during upload
+        console.log(`Progress: ${data.progress}% for ${data.filename}`);
+    }
+    
+    function pauseUploads() {
+        fetch('/api/pause_uploads', { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Uploads paused');
+                }
+            });
+    }
+    
+    function resumeUploads() {
+        fetch('/api/resume_uploads', { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Uploads resumed');
+                }
+            });
+    }
+    
+    function cancelUploads() {
+        if (confirm('Cancel all uploads?')) {
+            fetch('/api/cancel_uploads', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('All uploads cancelled');
+                        document.getElementById('upload-progress-container').innerHTML = '<p>No uploads in progress</p>';
+                    }
+                });
+        }
+    }
+    
+    // Auto-refresh status
+    setInterval(() => {
+        fetch('/api/upload_status')
+            .then(response => response.json())
+            .then(data => {
+                updateUploadDisplay(data);
+            });
+    }, 3000);
+</script>
+{% endblock %}
